@@ -1,27 +1,22 @@
-package ge.paso22.fileprocessingapp;
+package ge.paso22.fileprocessingapp.config;
 
 import ge.paso22.fileprocessingapp.model.FileProcessingRecord;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
 
 // @EnableAsync is required for @Async in FileProcessor to take effect.
 // Without it, Spring ignores the annotation and processing blocks the HTTP thread.
 @EnableAsync
-@SpringBootApplication
-public class FileProcessingAppApplication {
+@Configuration
+public class Async {
 
-  public static void main(String[] args) {
-    SpringApplication.run(FileProcessingAppApplication.class, args);
-  }
-
-  // Declared here so Spring manages it as a singleton, ensuring FileServiceBean and FileProcessor
+  // Declared here so Spring manages it as a singleton, ensuring FileService and FileProcessor
   // share the exact same map instance. Declaring it with 'new' inside each class would create
   // two independent maps — each component would only see its own writes.
   @Bean
-  public ConcurrentHashMap<String, FileProcessingRecord> processingStore() {
+  public ConcurrentHashMap<String, FileProcessingRecord> processingStoreAsBean() {
     return new ConcurrentHashMap<>();
   }
 }
