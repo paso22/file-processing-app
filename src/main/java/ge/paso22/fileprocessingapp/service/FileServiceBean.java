@@ -4,6 +4,7 @@ import ge.paso22.fileprocessingapp.model.FileProcessingRecord;
 import ge.paso22.fileprocessingapp.model.FileProcessingResponseDto;
 import ge.paso22.fileprocessingapp.model.FileProcessingStatus;
 import ge.paso22.fileprocessingapp.processor.FileProcessor;
+import ge.paso22.fileprocessingapp.service.aws.S3Service;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -21,6 +22,8 @@ public class FileServiceBean implements FileService {
   private final FileProcessor fileProcessor;
 
   private final ConcurrentHashMap<String, FileProcessingRecord> processingStore;
+
+  private final S3Service s3Service;
 
   @Override
   public FileProcessingResponseDto submitFile(MultipartFile file) throws Exception {
@@ -45,7 +48,10 @@ public class FileServiceBean implements FileService {
             .build();
 
     processingStore.put(processingId, record);
-    fileProcessor.process(processingId, fileName, file.getBytes());
+    String s3Key = processingId + "/" + fileName;
+    s3Service.uploadFile(s3Key, file.getBytes(), file.getContentType());
+
+    fileProcessor.process(processingId, fileName, s3Key);
     return FileProcessingResponseDto.from(record);
   }
 

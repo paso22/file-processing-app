@@ -5,3 +5,8 @@ spring:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+
+aws:
+  region: eu-central-1
+  s3:
+    bucket-name: file-processor-dev-filestoragebucket-o63300smnxqs
