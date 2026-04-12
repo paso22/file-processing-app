@@ -4,11 +4,11 @@ import ge.paso22.fileprocessingapp.model.FileProcessingRecord;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
-@EnableAsync
+@EnableScheduling
 @Configuration
-public class Async {
+public class SchedulingConfig {
 
   @Bean
   public ConcurrentHashMap<String, FileProcessingRecord> processingStoreAsBean() {

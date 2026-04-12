@@ -9,4 +9,6 @@ spring:
 aws:
   region: eu-central-1
   s3:
-    bucket-name: file-processor-dev-filestoragebucket-o63300smnxqs
+    bucket-name: file-processor-dev-136004864964-files
+  sqs:
+    queue-url: https://sqs.eu-central-1.amazonaws.com/136004864964/file-processor-dev-queue

@@ -3,7 +3,6 @@ package ge.paso22.fileprocessingapp.service;
 import ge.paso22.fileprocessingapp.model.FileProcessingRecord;
 import ge.paso22.fileprocessingapp.model.FileProcessingResponseDto;
 import ge.paso22.fileprocessingapp.model.FileProcessingStatus;
-import ge.paso22.fileprocessingapp.processor.FileProcessor;
 import ge.paso22.fileprocessingapp.service.aws.S3Service;
 import java.time.Instant;
 import java.util.Optional;
@@ -18,8 +17,6 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @RequiredArgsConstructor
 public class FileServiceBean implements FileService {
-
-  private final FileProcessor fileProcessor;
 
   private final ConcurrentHashMap<String, FileProcessingRecord> processingStore;
 
@@ -50,8 +47,6 @@ public class FileServiceBean implements FileService {
     processingStore.put(processingId, record);
     String s3Key = processingId + "/" + fileName;
     s3Service.uploadFile(s3Key, file.getBytes(), file.getContentType());
-
-    fileProcessor.process(processingId, fileName, s3Key);
     return FileProcessingResponseDto.from(record);
   }
 

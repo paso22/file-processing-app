@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  S3 bucket + SQS queue for the file processor application.
+  S3 notifies SQS when a file is uploaded, decoupling upload from processing.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [ dev, staging, prod ]
+
+  ApplicationName:
+    Type: String
+    Default: file-processor
+
+Resources:
+
+  # ── Dead Letter Queue ───────────────────────────────────────────────────────
+  # Declared first because FileProcessingQueue depends on its ARN via RedrivePolicy.
+  # Making the dependency order explicit prevents fragile implicit resolution.
+  FileProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ApplicationName}-${Environment}-dlq"
+      # 14 days — gives enough time to investigate failures before messages expire
+      MessageRetentionPeriod: 1209600
+      # SSE-SQS at no extra cost; uses the AWS-managed SQS key
+      SqsManagedSseEnabled: true
+
+  # ── SQS Queue ──────────────────────────────────────────────────────────────
+  FileProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ApplicationName}-${Environment}-queue"
+
+      # Must be greater than the maximum expected processing time.
+      # If a consumer takes longer than this, SQS re-delivers the message
+      # and burns a retry attempt even when processing succeeds.
+      VisibilityTimeout: 300
+
+      # 7 days — ensures messages survive a weekend outage without being
+      # silently dropped. 4 days (the default) is often too short.
+      MessageRetentionPeriod: 604800
+
+      SqsManagedSseEnabled: true
+
+      # After 5 failed attempts the message moves to the DLQ instead of
+      # disappearing. 5 is more tolerant of transient failures than 3.
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FileProcessingDLQ.Arn
+        maxReceiveCount: 5
+
+  # ── SQS Queue Policy ───────────────────────────────────────────────────────
+  # S3 needs explicit permission to send messages to your SQS queue.
+  # Without this policy, the S3 event notification will be silently rejected.
+  FileProcessingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref FileProcessingQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3ToSendMessages
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt FileProcessingQueue.Arn
+            Condition:
+              # ArnLike alone is insufficient — a bucket in another account could
+              # share the same ARN pattern. SourceAccount closes the confused
+              # deputy gap by binding the permission to this specific account.
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:s3:::${ApplicationName}-${Environment}-${AWS::AccountId}-files"
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ── S3 Bucket ──────────────────────────────────────────────────────────────
+  FileStorageBucket:
+    Type: AWS::S3::Bucket
+    # DependsOn ensures the queue POLICY (not just the queue) exists before
+    # S3 tries to validate the notification target. Without this, CloudFormation
+    # may create the bucket before the policy is ready and the notification fails.
+    DependsOn: FileProcessingQueuePolicy
+    # Retain prevents accidental data loss on stack deletion or bucket replacement.
+    # DeletionPolicy: Delete fails on a non-empty versioned bucket, leaving
+    # the stack stuck in DELETE_FAILED with orphaned resources.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      # Explicit name lets us construct the bucket ARN with !Sub elsewhere,
+      # avoiding !GetAtt references that would create circular dependencies.
+      BucketName: !Sub "${ApplicationName}-${Environment}-${AWS::AccountId}-files"
+
+      # Explicit declaration ensures encryption intent survives future AWS
+      # default policy changes, even though SSE-S3 is currently the default.
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+      # S3 fires a message to SQS every time
+      # a new object is created (i.e., a file is uploaded).
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Queue: !GetAtt FileProcessingQueue.Arn
+
+      LifecycleConfiguration:
+        Rules:
+          # ExpirationInDays marks the current version as expired but does not
+          # remove it or previous versions when versioning is enabled.
+          - Id: DeleteCurrentVersions
+            Status: Enabled
+            ExpirationInDays: 30
+
+          # Without this, every overwritten or deleted object leaves a non-current
+          # version that accumulates indefinitely, growing storage costs silently.
+          - Id: DeleteNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+
+          # Orphaned parts from interrupted multipart uploads are billed as
+          # storage. This rule cleans them up automatically.
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+      Tags:
+        - Key: Application
+          Value: !Ref ApplicationName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── IAM Policy ─────────────────────────────────────────────────────────────
+  # Grants your application the minimum permissions it needs — nothing more.
+  # Attach this managed policy to your dev IAM user or EC2 instance role.
+  ApplicationPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ApplicationName}-${Environment}-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3ObjectAccess
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${ApplicationName}-${Environment}-${AWS::AccountId}-files/*"
+
+          # s3:ListBucket targets the bucket ARN (not /*).
+          # Required for key-existence checks; without it the SDK returns a 403
+          # that looks identical to a missing-object error.
+          - Sid: S3BucketAccess
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource: !Sub "arn:aws:s3:::${ApplicationName}-${Environment}-${AWS::AccountId}-files"
+
+          - Sid: SQSAccess
+            Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              # Required to resolve a queue name to its URL before API calls
+              - sqs:GetQueueUrl
+            Resource: !GetAtt FileProcessingQueue.Arn
+
+  # ── CloudWatch Alarm ────────────────────────────────────────────────────────
+  # Messages in the DLQ mean processing is failing. Without this alarm the
+  # failures are completely silent — nobody knows until manually checking.
+  DLQDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ApplicationName}-${Environment}-dlq-depth"
+      AlarmDescription: "Messages are arriving in the DLQ — processing failures require investigation"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt FileProcessingDLQ.QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  BucketName:
+    Value: !Ref FileStorageBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-bucket-name"
+
+  BucketArn:
+    Value: !Sub "arn:aws:s3:::${ApplicationName}-${Environment}-${AWS::AccountId}-files"
+    Export:
+      Name: !Sub "${AWS::StackName}-bucket-arn"
+
+  QueueUrl:
+    Value: !Ref FileProcessingQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-queue-url"
+
+  QueueArn:
+    Value: !GetAtt FileProcessingQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-queue-arn"
+
+  ApplicationPolicyArn:
+    Value: !Ref ApplicationPolicy
+    Export:
+      Name: !Sub "${AWS::StackName}-policy-arn"

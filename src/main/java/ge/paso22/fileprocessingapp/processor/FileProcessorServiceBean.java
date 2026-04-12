@@ -9,24 +9,23 @@ import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 @Slf4j
-@Component
+@Service
 @RequiredArgsConstructor
-public class FileProcessor {
+public class FileProcessorServiceBean implements FileProcessorService {
 
   private final ConcurrentHashMap<String, FileProcessingRecord> processingStore;
 
   private final S3Service s3Service;
 
-  @Async
-  public void process(String jobId, String fileName, String s3Key) {
+  @Override
+  public void process(String processingId, String fileName, String s3Key) {
     try {
       processingStore.put(
-          jobId,
-          processingStore.get(jobId).toBuilder()
+          processingId,
+          processingStore.get(processingId).toBuilder()
               .status(FileProcessingStatus.PROCESSING)
               .message("File is being processed")
               .build());
@@ -44,8 +43,8 @@ public class FileProcessor {
       int characterCount = content.length();
 
       processingStore.put(
-          jobId,
-          processingStore.get(jobId).toBuilder()
+          processingId,
+          processingStore.get(processingId).toBuilder()
               .status(FileProcessingStatus.COMPLETED)
               .lineCount(lineCount)
               .characterCount(characterCount)
@@ -55,15 +54,16 @@ public class FileProcessor {
 
       log.info(
           "Processing {} completed: fileName='{}', lines={}, chars={}",
-          jobId,
+          processingId,
           fileName,
           lineCount,
           characterCount);
     } catch (Exception e) {
-      log.error("Processing {} failed for file '{}': {}", jobId, fileName, e.getMessage(), e);
+      log.error(
+          "Processing {} failed for file '{}': {}", processingId, fileName, e.getMessage(), e);
       processingStore.put(
-          jobId,
-          processingStore.get(jobId).toBuilder()
+          processingId,
+          processingStore.get(processingId).toBuilder()
               .status(FileProcessingStatus.FAILED)
               .message("Processing failed: " + e.getMessage())
               .completedAt(Instant.now())
